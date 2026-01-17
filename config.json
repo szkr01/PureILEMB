@@ -1,0 +1,9 @@
+{
+    "watch_dirs": [
+        "E:\\eazywan\\Output",
+        "E:/Github/ComfyUI/output/"
+    ],
+    "model_repo": "SmilingWolf/wd-eva02-large-tagger-v3",
+    "db_path": "data/images.db",
+    "faiss_index_path": "data/faiss.index"
+}
