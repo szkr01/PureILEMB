@@ -100,4 +100,4 @@ uv run python -m app.main
 
 ## ライセンス
 
-[MIT License](LICENSE) (またはプロジェクトに適用されるライセンス)
+[MIT License](LICENSE)
