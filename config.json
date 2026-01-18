@@ -5,5 +5,6 @@
     ],
     "model_repo": "SmilingWolf/wd-eva02-large-tagger-v3",
     "db_path": "data/images.db",
-    "faiss_index_path": "data/faiss.index"
+    "faiss_index_path": "data/faiss.index",
+    "sql_variable_limit": 1000000
 }

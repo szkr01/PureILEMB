@@ -1,4 +1,5 @@
 import sqlite3
+import re
 import numpy as np
 import io
 from typing import List, Optional, Tuple, Generator, Dict
@@ -50,6 +51,30 @@ class DatabaseManager:
             # Create Index on filepath for fast lookups
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_filepath ON images (filepath)")
             conn.commit()
+
+    def _get_sqlite_variable_limit(self, conn: sqlite3.Connection) -> int:
+        """
+        Get SQLite's max number of variables per statement.
+        Falls back to 999 if unavailable.
+        """
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA max_variable_number")
+            row = cursor.fetchone()
+            if row and row[0]:
+                return int(row[0])
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("PRAGMA compile_options")
+            for (opt,) in cursor.fetchall():
+                if opt.startswith("MAX_VARIABLE_NUMBER="):
+                    return int(opt.split("=", 1)[1])
+        except sqlite3.OperationalError:
+            pass
+
+        return 999
 
     def add_image(self, filepath: str, embedding: np.ndarray, timestamp: float) -> int:
         """
@@ -159,11 +184,20 @@ class DatabaseManager:
             
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            placeholders = ','.join(['?'] * len(image_ids))
-            query = f"SELECT id, filepath FROM images WHERE id IN ({placeholders})"
-            cursor.execute(query, image_ids)
-            rows = cursor.fetchall()
-            return {r[0]: r[1] for r in rows}
+            configured_limit = max(1, int(getattr(config, "SQL_VARIABLE_LIMIT", 400000)))
+            sqlite_limit = self._get_sqlite_variable_limit(conn)
+            limit = min(configured_limit, sqlite_limit)
+            result: dict[int, str] = {}
+
+            for start in range(0, len(image_ids), limit):
+                chunk = image_ids[start:start + limit]
+                placeholders = ','.join(['?'] * len(chunk))
+                query = f"SELECT id, filepath FROM images WHERE id IN ({placeholders})"
+                cursor.execute(query, chunk)
+                rows = cursor.fetchall()
+                result.update({r[0]: r[1] for r in rows})
+
+            return result
             
     def get_id_by_path(self, filepath: str) -> Optional[int]:
         with self._get_connection() as conn:

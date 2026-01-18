@@ -49,4 +49,8 @@ class Config:
         self.BATCH_TIMEOUT = 1.0 # seconds
         self.DEBOUNCE_DELAY = 1.0 # seconds
 
+        # SQLite settings
+        # Default below SQLite's 999 variable limit to stay safe across builds.
+        self.SQL_VARIABLE_LIMIT = int(config_data.get("sql_variable_limit", 1000000))
+
 config = Config()
