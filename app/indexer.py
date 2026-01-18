@@ -23,6 +23,9 @@ class Indexer:
         
         self.running = False
         self.threads = []
+
+        self._pending_files = set()
+        self._pending_lock = threading.Lock()
         
         self.batch_size = config.BATCH_SIZE
         self.batch_timeout = config.BATCH_TIMEOUT
@@ -51,7 +54,18 @@ class Indexer:
         logger.info("Indexer pipeline stopped.")
 
     def add_file(self, filepath: str):
+        with self._pending_lock:
+            if filepath in self._pending_files:
+                return
+            self._pending_files.add(filepath)
         self.input_queue.put(filepath)
+
+    def _unmark_pending(self, filepaths: List[str]):
+        if not filepaths:
+            return
+        with self._pending_lock:
+            for path in filepaths:
+                self._pending_files.discard(path)
 
     def _loader_loop(self):
         """Stage 1: Batch paths and load images to CPU tensors."""
@@ -80,6 +94,9 @@ class Indexer:
                 
                 if is_full or is_timeout:
                     valid_files = [f for f in batch_paths if os.path.exists(f)]
+                    invalid_files = [f for f in batch_paths if f not in valid_files]
+                    if invalid_files:
+                        self._unmark_pending(invalid_files)
                     
                     if valid_files:
                         t0 = time.time()
@@ -92,6 +109,11 @@ class Indexer:
                         
                         if loaded_data:
                             self.gpu_queue.put((loaded_data, valid_files))
+                        else:
+                            self._unmark_pending(valid_files)
+                    else:
+                        if valid_files:
+                            self._unmark_pending(valid_files)
                     
                     batch_paths = []
                     
@@ -122,6 +144,11 @@ class Indexer:
                 if len(valid_indices) > 0:
                     processed_paths = [original_paths[i] for i in valid_indices]
                     self.save_queue.put((processed_paths, features))
+                    failed_paths = [p for i, p in enumerate(original_paths) if i not in valid_indices]
+                    if failed_paths:
+                        self._unmark_pending(failed_paths)
+                else:
+                    self._unmark_pending(original_paths)
                     
             except Exception as e:
                 logger.error(f"Error in GPU loop: {e}", exc_info=True)
@@ -156,6 +183,8 @@ class Indexer:
                 
                 save_time = (t1 - t0) * 1000
                 logger.info(f"[Saver] Saved {len(ids)} items in {save_time:.1f}ms. Total Pipeline Finished.")
+
+                self._unmark_pending(paths)
                 
             except Exception as e:
                 logger.error(f"Error in Saver loop: {e}", exc_info=True)

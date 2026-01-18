@@ -22,6 +22,7 @@ class ImageEventHandler(FileSystemEventHandler):
         super().__init__()
         self.last_processed = {}
         self._lock = threading.Lock()
+        self._scheduled = {}
 
     def on_created(self, event):
         if event.is_directory: return
@@ -51,14 +52,23 @@ class ImageEventHandler(FileSystemEventHandler):
             if not os.path.exists(filepath): return
             current_mtime = os.path.getmtime(filepath)
             now = time.time()
+
+            # Normalize key for debounce/scheduling (Windows path case/sep differences)
+            key = os.path.normcase(os.path.normpath(filepath))
+
+            # If file is still being written, wait until it settles
+            age = now - current_mtime
+            if age < config.DEBOUNCE_DELAY:
+                self._schedule_delayed(filepath, delay=max(0.05, config.DEBOUNCE_DELAY - age))
+                return
             
             with self._lock:
-                last_time, last_mtime = self.last_processed.get(filepath, (0, 0))
-                # If processed recently (within DEBOUNCE_DELAY) and mtime hasn't changed, skip
-                if (now - last_time < config.DEBOUNCE_DELAY) and (current_mtime == last_mtime):
+                last_time, last_mtime = self.last_processed.get(key, (0, 0))
+                # If processed recently, skip (regardless of mtime to avoid double-queue on rapid events)
+                if (now - last_time < config.DEBOUNCE_DELAY):
                     # logger.info(f"Debounced duplicate event for {filepath}")
                     return
-                self.last_processed[filepath] = (now, current_mtime)
+                self.last_processed[key] = (now, current_mtime)
 
             # Check DB to see if we really need to update
             # This handles case where Watchdog fires on read/metadata access but content is same
@@ -76,6 +86,22 @@ class ImageEventHandler(FileSystemEventHandler):
         except Exception as e:
             logger.error(f"Error preparing {filepath} for queue: {e}")
 
+    def _schedule_delayed(self, filepath, delay: float):
+        key = os.path.normcase(os.path.normpath(filepath))
+        with self._lock:
+            if key in self._scheduled:
+                return
+            timer = threading.Timer(delay, self._run_scheduled, args=(filepath,))
+            self._scheduled[key] = timer
+            timer.daemon = True
+            timer.start()
+
+    def _run_scheduled(self, filepath):
+        key = os.path.normcase(os.path.normpath(filepath))
+        with self._lock:
+            self._scheduled.pop(key, None)
+        self.process_file(filepath)
+
     def remove_file(self, filepath):
         logger.info(f"Removing file: {filepath}")
         image_id = db.delete_image(filepath)
@@ -84,8 +110,15 @@ class ImageEventHandler(FileSystemEventHandler):
             logger.info(f"Removed ID {image_id} from index.")
         
         with self._lock:
-            if filepath in self.last_processed:
-                del self.last_processed[filepath]
+            key = os.path.normcase(os.path.normpath(filepath))
+            if key in self.last_processed:
+                del self.last_processed[key]
+            if key in self._scheduled:
+                timer = self._scheduled.pop(key)
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
 
 class Watcher:
     def __init__(self):
